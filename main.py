@@ -159,6 +159,94 @@ class Enemy:
                          self.pos.y - self.size - 5,
                          health_bar_length * health_ratio, 5))
 
+class Bullet:
+    def __init__(self, start_pos, target_pos, damage, speed=10):
+        self.pos = pygame.Vector2(start_pos)
+        self.target_pos = pygame.Vector2(target_pos)
+        self.damage = damage
+        self.speed = speed
+        self.radius = 5
+        self.color = (255, 255, 0)  # Yellow bullets
+        
+        # Calculate direction
+        dx, dy = target_pos[0] - start_pos[0], target_pos[1] - start_pos[1]
+        distance = max(1, (dx ** 2 + dy ** 2) ** 0.5)
+        self.direction = pygame.Vector2(dx/distance, dy/distance)
+    
+    def update(self):
+        self.pos += self.direction * self.speed
+    
+    def draw(self, screen):
+        pygame.draw.circle(screen, self.color, (int(self.pos.x), int(self.pos.y)), self.radius)
+    
+    def check_hit(self, enemy):
+        distance = (self.pos - enemy.pos).length()
+        return distance < enemy.size + self.radius
+
+class Tower:
+    def __init__(self, pos, game):
+        self.pos = pygame.Vector2(pos)
+        self.game = game
+        self.range = 200  # Shooting range in pixels
+        self.damage = 20
+        self.attack_speed = 1.0  # Attacks per second
+        self.last_shot_time = 0
+        self.bullets = []
+        self.color = (0, 0, 255)  # Blue towers
+        self.size = 30
+    
+    def update(self, current_time):
+        # Update bullets
+        for bullet in self.bullets[:]:
+            bullet.update()
+            
+            # Check for hits
+            for enemy in self.game.wave_manager.active_enemies:
+                if bullet.check_hit(enemy):
+                    enemy.health -= bullet.damage
+                    if enemy.health <= 0:
+                        enemy.is_dead = True
+                    self.bullets.remove(bullet)
+                    break
+            
+            # Remove bullets that are out of range
+            if (bullet.pos - self.pos).length() > self.range:
+                self.bullets.remove(bullet)
+        
+        # Try to shoot
+        if current_time - self.last_shot_time >= 1000 / self.attack_speed:
+            target = self.find_target()
+            if target:
+                self.shoot(target)
+                self.last_shot_time = current_time
+    
+    def find_target(self):
+        closest_enemy = None
+        closest_distance = float('inf')
+        
+        for enemy in self.game.wave_manager.active_enemies:
+            distance = (enemy.pos - self.pos).length()
+            if distance < self.range and distance < closest_distance:
+                closest_enemy = enemy
+                closest_distance = distance
+        
+        return closest_enemy
+    
+    def shoot(self, target):
+        bullet = Bullet(self.pos, target.pos, self.damage)
+        self.bullets.append(bullet)
+    
+    def draw(self, screen):
+        # Draw tower
+        pygame.draw.circle(screen, self.color, (int(self.pos.x), int(self.pos.y)), self.size)
+        # Draw range circle (semi-transparent)
+        range_surface = pygame.Surface((self.range * 2, self.range * 2), pygame.SRCALPHA)
+        pygame.draw.circle(range_surface, (0, 0, 255, 30), (self.range, self.range), self.range)
+        screen.blit(range_surface, (self.pos.x - self.range, self.pos.y - self.range))
+        # Draw bullets
+        for bullet in self.bullets:
+            bullet.draw(screen)
+
 class Wave:
     def __init__(self, enemy_count, enemy_types, spawn_delay):
         self.enemy_count = enemy_count  # Total enemies in this wave
@@ -286,7 +374,8 @@ class Game:
         
         # Initialize game components
         self.grid = Grid()
-        self.wave_manager = WaveManager(self)  # Pass self to WaveManager
+        self.wave_manager = WaveManager(self)
+        self.towers = []  # List to store towers
         
         # UI elements
         self.font = pygame.font.Font(None, 36)
@@ -300,12 +389,18 @@ class Game:
             
             # Update
             self.wave_manager.update(current_time)
+            for tower in self.towers:
+                tower.update(current_time)
             
             # Draw
             self.screen.fill(BACKGROUND)
             
             # Draw grid and walls
             self.grid.draw(self.screen)
+            
+            # Draw towers
+            for tower in self.towers:
+                tower.draw(self.screen)
             
             # Draw enemies
             for enemy in self.wave_manager.active_enemies:
@@ -341,7 +436,7 @@ class Game:
             if event.type == pygame.QUIT:
                 self.running = False
             elif event.type == pygame.MOUSEBUTTONDOWN:
-                if event.button == 1:  # Left click
+                if event.button == 1:  # Left click for walls
                     mouse_pos = pygame.mouse.get_pos()
                     grid_pos = self.grid.get_grid_pos(mouse_pos)
                     self.grid.toggle_wall(grid_pos)
@@ -349,6 +444,14 @@ class Game:
                     # Recalculate paths for all enemies when wall placement changes
                     for enemy in self.wave_manager.active_enemies:
                         enemy.calculate_path()
+                elif event.button == 3:  # Right click for towers
+                    mouse_pos = pygame.mouse.get_pos()
+                    grid_pos = self.grid.get_grid_pos(mouse_pos)
+                    # Only place towers on empty spaces
+                    if self.grid.grid[grid_pos[1]][grid_pos[0]] == 0:
+                        tower_pos = (grid_pos[0] * GRID_SIZE + GRID_SIZE//2,
+                                   grid_pos[1] * GRID_SIZE + GRID_SIZE//2)
+                        self.towers.append(Tower(tower_pos, self))
 
 def main():
     game = Game()
