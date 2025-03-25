@@ -1,143 +1,131 @@
 import pygame
+import heapq
 
 pygame.init()
 
-# Screen settings
-WIDTH, HEIGHT = 600, 400
-GRID_SIZE = 50  # Grid cell size
+# Screen and grid settings
+WIDTH, HEIGHT = 600, 600
+GRID_SIZE = 50  # Size of each cell
+ROWS, COLS = HEIGHT // GRID_SIZE, WIDTH // GRID_SIZE
 screen = pygame.display.set_mode((WIDTH, HEIGHT))
 clock = pygame.time.Clock()
-
-# Set window title to Tower Defense
-pygame.display.set_caption("Tower Defense")
 
 # Colors
 BACKGROUND = (30, 30, 30)
 GRID_COLOR = (50, 50, 50)
-TOWER_COLOR = (0, 200, 0)
-MENU_COLOR = (50, 50, 50)
-TEXT_COLOR = (255, 255, 255)
+ENEMY_COLOR = (200, 0, 0)
+BASE_COLOR = (0, 200, 0)
+PATH_COLOR = (100, 100, 255)
+WALL_COLOR = (150, 150, 150)
 
-# Font
-font = pygame.font.Font(None, 24)
+# Define a simple grid (0 = walkable, 1 = wall)
+grid = [[0 for _ in range(COLS)] for _ in range(ROWS)]
 
-# Tower list (each tower is a pygame.Rect)
-towers = [pygame.Rect(100, 150, GRID_SIZE, GRID_SIZE), pygame.Rect(300, 200, GRID_SIZE, GRID_SIZE)]
-selected_tower = None  # Stores which tower is selected for dragging
-original_pos = None  # Stores the tower's position before dragging
-show_menu = False  # Whether to show the context menu
-menu_pos = (0, 0)  # Context menu position
+# Set the home base in the center of the grid
+base_x, base_y = COLS // 2, ROWS // 2
+grid[base_y][base_x] = 2  # Mark the home base position
 
-def draw_grid():
-    """Draws a grid on the screen."""
+# Enemy spawn point (top-left corner)
+enemy_start = (0, 0)
+
+# A* Pathfinding algorithm
+def heuristic(a, b):
+    """Manhattan distance heuristic for A*"""
+    return abs(a[0] - b[0]) + abs(a[1] - b[1])
+
+def get_neighbors(node):
+    """Returns valid neighbors for pathfinding"""
+    x, y = node
+    neighbors = [(x+1, y), (x-1, y), (x, y+1), (x, y-1)]
+    return [(nx, ny) for nx, ny in neighbors if 0 <= nx < COLS and 0 <= ny < ROWS and grid[ny][nx] != 1]
+
+def a_star(start, goal):
+    """A* pathfinding algorithm"""
+    open_set = []
+    heapq.heappush(open_set, (0, start))
+    came_from = {}
+    g_score = {start: 0}
+    f_score = {start: heuristic(start, goal)}
+
+    while open_set:
+        _, current = heapq.heappop(open_set)
+
+        if current == goal:
+            path = []
+            while current in came_from:
+                path.append(current)
+                current = came_from[current]
+            return path[::-1]  # Return reversed path
+
+        for neighbor in get_neighbors(current):
+            temp_g_score = g_score[current] + 1
+            if temp_g_score < g_score.get(neighbor, float('inf')):
+                came_from[neighbor] = current
+                g_score[neighbor] = temp_g_score
+                f_score[neighbor] = temp_g_score + heuristic(neighbor, goal)
+                heapq.heappush(open_set, (f_score[neighbor], neighbor))
+
+    return []  # No path found
+
+# Enemy class
+class Enemy:
+    def __init__(self, start, goal):
+        self.path = a_star(start, goal)  # Calculate path using A*
+        self.current_index = 0  # Start at the first path step
+        if self.path:
+            self.rect = pygame.Rect(self.path[0][0] * GRID_SIZE, self.path[0][1] * GRID_SIZE, GRID_SIZE, GRID_SIZE)
+        else:
+            self.rect = pygame.Rect(start[0] * GRID_SIZE, start[1] * GRID_SIZE, GRID_SIZE, GRID_SIZE)
+        self.speed = 2  # Speed of movement
+
+    def update(self):
+        """Move along the path"""
+        if self.path and self.current_index < len(self.path):
+            target_x, target_y = self.path[self.current_index]
+            target_x *= GRID_SIZE
+            target_y *= GRID_SIZE
+
+            dx, dy = target_x - self.rect.x, target_y - self.rect.y
+            distance = max(1, (dx ** 2 + dy ** 2) ** 0.5)  # Avoid division by zero
+            move_x, move_y = (dx / distance) * self.speed, (dy / distance) * self.speed
+
+            self.rect.x += move_x
+            self.rect.y += move_y
+
+            # If close to the next target position, move to the next path point
+            if abs(dx) < self.speed and abs(dy) < self.speed:
+                self.current_index += 1
+
+# Create an enemy
+enemy = Enemy(enemy_start, (base_x, base_y))
+
+running = True
+while running:
+    screen.fill(BACKGROUND)
+
+    # Draw grid
     for x in range(0, WIDTH, GRID_SIZE):
         pygame.draw.line(screen, GRID_COLOR, (x, 0), (x, HEIGHT))
     for y in range(0, HEIGHT, GRID_SIZE):
         pygame.draw.line(screen, GRID_COLOR, (0, y), (WIDTH, y))
 
-def draw_menu():
-    """Draws a simple context menu when a tower is clicked."""
-    menu_width, menu_height = 120, 60
-    menu_rect = pygame.Rect(menu_pos[0], menu_pos[1], menu_width, menu_height)
-    pygame.draw.rect(screen, MENU_COLOR, menu_rect)
-    pygame.draw.rect(screen, (200, 200, 200), menu_rect, 2)  # Border
+    # Draw base
+    pygame.draw.rect(screen, BASE_COLOR, (base_x * GRID_SIZE, base_y * GRID_SIZE, GRID_SIZE, GRID_SIZE))
 
-    # Draw text
-    text = font.render("Upgrade", True, TEXT_COLOR)
-    screen.blit(text, (menu_pos[0] + 10, menu_pos[1] + 10))
-    text = font.render("Sell", True, TEXT_COLOR)
-    screen.blit(text, (menu_pos[0] + 10, menu_pos[1] + 35))
+    # Draw path (for debugging)
+    if enemy.path:
+        for node in enemy.path:
+            pygame.draw.rect(screen, PATH_COLOR, (node[0] * GRID_SIZE, node[1] * GRID_SIZE, GRID_SIZE, GRID_SIZE), 1)
 
-def is_valid_placement(tower, ignore_tower=None):
-    """Checks if a tower is placed within valid bounds and not overlapping."""
-    # Ensure the tower is fully within the screen bounds
-    if tower.left < 0 or tower.right > WIDTH or tower.top < 0 or tower.bottom > HEIGHT:
-        return False
+    # Draw enemy
+    pygame.draw.rect(screen, ENEMY_COLOR, enemy.rect)
 
-    # Ensure the tower is not overlapping with other towers (excluding itself)
-    for other in towers:
-        if other != ignore_tower and tower.colliderect(other):
-            return False
-
-    return True
-
-def place_new_tower(mouse_pos):
-    """Places a new tower at the nearest grid position if the spot is valid."""
-    x = round(mouse_pos[0] / GRID_SIZE) * GRID_SIZE
-    y = round(mouse_pos[1] / GRID_SIZE) * GRID_SIZE
-    new_tower = pygame.Rect(x, y, GRID_SIZE, GRID_SIZE)
-
-    if is_valid_placement(new_tower):  # Check if placement is valid
-        towers.append(new_tower)  # Add new tower
-    else:
-        print("Invalid placement! Tower overlaps another or is out of bounds.")
-
-running = True
-dragging = False  # Whether a tower is being dragged
-offset_x, offset_y = 0, 0  # Drag offset
-
-while running:
-    screen.fill(BACKGROUND)
-    draw_grid()  # Draw the grid
+    # Update enemy movement
+    enemy.update()
 
     for event in pygame.event.get():
         if event.type == pygame.QUIT:
             running = False
-        
-        elif event.type == pygame.MOUSEBUTTONDOWN:
-            if event.button == 1:  # Left click
-                clicked_tower = None
-                for tower in towers:
-                    if tower.collidepoint(event.pos):  # Check if clicking a tower
-                        clicked_tower = tower
-                        offset_x, offset_y = event.pos[0] - tower.x, event.pos[1] - tower.y
-                        original_pos = (tower.x, tower.y)  # Store original position before dragging
-                        break  # Stop after first match
-
-                if clicked_tower:
-                    if show_menu and selected_tower == clicked_tower:
-                        # If clicking the same tower, toggle menu off
-                        show_menu = False
-                    else:
-                        selected_tower = clicked_tower
-                        show_menu = True
-                        menu_pos = (selected_tower.x + GRID_SIZE, selected_tower.y)  # Menu next to tower
-                    dragging = True  # Allow dragging
-                else:
-                    show_menu = False  # Clicked outside, hide menu
-            elif event.button == 3:  # Right click to place a new tower
-                place_new_tower(event.pos)
-
-        elif event.type == pygame.MOUSEBUTTONUP:
-            if dragging and selected_tower:
-                # Snap tower to the nearest grid position
-                new_x = round(selected_tower.x / GRID_SIZE) * GRID_SIZE
-                new_y = round(selected_tower.y / GRID_SIZE) * GRID_SIZE
-
-                # Check if the new position is valid
-                temp_rect = pygame.Rect(new_x, new_y, GRID_SIZE, GRID_SIZE)
-                if is_valid_placement(temp_rect, ignore_tower=selected_tower):
-                    # Apply the snapped position
-                    selected_tower.x = new_x
-                    selected_tower.y = new_y
-                else:
-                    # If invalid, return tower to original position
-                    selected_tower.x, selected_tower.y = original_pos
-
-            dragging = False
-
-        elif event.type == pygame.MOUSEMOTION:
-            if dragging and selected_tower:
-                selected_tower.x = event.pos[0] - offset_x
-                selected_tower.y = event.pos[1] - offset_y
-
-    # Draw towers
-    for tower in towers:
-        pygame.draw.rect(screen, TOWER_COLOR, tower)
-
-    # Draw context menu if open
-    if show_menu:
-        draw_menu()
 
     pygame.display.flip()
     clock.tick(60)
