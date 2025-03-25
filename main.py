@@ -70,13 +70,15 @@ def a_star(start, goal):
 # Enemy class
 class Enemy:
     def __init__(self, start, goal):
-        self.path = a_star(start, goal)  # Calculate path using A*
-        self.current_index = 0  # Start at the first path step
-        if self.path:
-            self.rect = pygame.Rect(self.path[0][0] * GRID_SIZE, self.path[0][1] * GRID_SIZE, GRID_SIZE, GRID_SIZE)
-        else:
-            self.rect = pygame.Rect(start[0] * GRID_SIZE, start[1] * GRID_SIZE, GRID_SIZE, GRID_SIZE)
-        self.speed = 2  # Speed of movement
+        self.goal = goal
+        self.rect = pygame.Rect(start[0] * GRID_SIZE, start[1] * GRID_SIZE, GRID_SIZE, GRID_SIZE)
+        self.speed = 2
+        self.recalculate_path()
+
+    def recalculate_path(self):
+        """Recalculates the enemy's path when walls are placed."""
+        self.path = a_star((self.rect.x // GRID_SIZE, self.rect.y // GRID_SIZE), self.goal)
+        self.current_index = 0
 
     def update(self):
         """Move along the path"""
@@ -112,6 +114,12 @@ while running:
     # Draw base
     pygame.draw.rect(screen, BASE_COLOR, (base_x * GRID_SIZE, base_y * GRID_SIZE, GRID_SIZE, GRID_SIZE))
 
+    # Draw walls
+    for row in range(ROWS):
+        for col in range(COLS):
+            if grid[row][col] == 1:
+                pygame.draw.rect(screen, WALL_COLOR, (col * GRID_SIZE, row * GRID_SIZE, GRID_SIZE, GRID_SIZE))
+
     # Draw path (for debugging)
     if enemy.path:
         for node in enemy.path:
@@ -126,6 +134,14 @@ while running:
     for event in pygame.event.get():
         if event.type == pygame.QUIT:
             running = False
+        elif event.type == pygame.MOUSEBUTTONDOWN:
+            if event.button == 3:  # Right-click to place/remove walls
+                x, y = event.pos[0] // GRID_SIZE, event.pos[1] // GRID_SIZE
+                if grid[y][x] == 0:  # Place wall
+                    grid[y][x] = 1
+                elif grid[y][x] == 1:  # Remove wall
+                    grid[y][x] = 0
+                enemy.recalculate_path()  # Update enemy path
 
     pygame.display.flip()
     clock.tick(60)
