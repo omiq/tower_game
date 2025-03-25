@@ -1,6 +1,7 @@
 import pygame
 import heapq
 import random
+import math
 
 pygame.init()
 
@@ -27,7 +28,7 @@ base_x, base_y = COLS // 2, ROWS // 2
 grid[base_y][base_x] = 2  # Mark the home base position
 
 # Enemy spawn point (top-left corner)
-enemy_start = (0, 0)
+enemy_start = (2, 2)  # Changed from (0, 0) to (1, 1) to ensure it's within the grid
 
 # A* Pathfinding algorithm
 def heuristic(a, b):
@@ -77,19 +78,31 @@ class Enemy:
                 "speed": 1,
                 "health": 100,
                 "color": (255, 0, 0),  # Red
-                "size": 20
+                "size": 20,
+                "damage": 10,
+                "attack_speed": 1.0,
+                "range": 150,
+                "can_destroy_walls": False
             },
             "fast": {
                 "speed": 2,
                 "health": 50,
                 "color": (0, 255, 0),  # Green
-                "size": 15
+                "size": 15,
+                "damage": 5,
+                "attack_speed": 2.0,
+                "range": 100,
+                "can_destroy_walls": False
             },
             "tank": {
                 "speed": 0.5,
                 "health": 200,
                 "color": (128, 128, 128),  # Gray
-                "size": 25
+                "size": 25,
+                "damage": 30,
+                "attack_speed": 0.5,
+                "range": 200,
+                "can_destroy_walls": True
             }
         }
         
@@ -100,6 +113,10 @@ class Enemy:
         self.health = self.stats["health"]
         self.color = self.stats["color"]
         self.size = self.stats["size"]
+        self.damage = self.stats["damage"]
+        self.attack_speed = self.stats["attack_speed"]
+        self.range = self.stats["range"]
+        self.can_destroy_walls = self.stats["can_destroy_walls"]
         
         # Position and path variables
         self.pos = pygame.Vector2(enemy_start[0] * GRID_SIZE, enemy_start[1] * GRID_SIZE)
@@ -108,45 +125,159 @@ class Enemy:
         self.is_dead = False
         self.reached_base = False
         
+        # Combat variables
+        self.last_shot_time = 0
+        self.bullets = []
+        
+        # Patrol behavior
+        self.patrol_radius = 50
+        self.patrol_center = None
+        self.patrol_angle = 0
+        self.patrol_speed = 0.02
+        
         # Store game reference
         self.game = game
         
         # Get initial path
         self.calculate_path()
 
+    def clamp_to_grid(self, pos):
+        """Keep position within grid boundaries"""
+        # Add padding to prevent enemies from touching the edges
+        padding = self.size + 5
+        x = max(padding, min(pos.x, WIDTH - padding))
+        y = max(padding, min(pos.y, HEIGHT - padding))
+        return pygame.Vector2(x, y)
+
     def calculate_path(self):
         """Recalculates the enemy's path when walls are placed."""
         if self.game:
-            start = (int(self.pos.x // GRID_SIZE), int(self.pos.y // GRID_SIZE))
+            # Ensure we're using valid grid coordinates
+            grid_x = max(0, min(int(self.pos.x // GRID_SIZE), COLS - 1))
+            grid_y = max(0, min(int(self.pos.y // GRID_SIZE), ROWS - 1))
+            start = (grid_x, grid_y)
             self.path = a_star(start, (base_x, base_y), self.game.grid.grid)
             self.current_path_index = 0
+            
+            # If no path found, start patrolling from current position
+            if not self.path:
+                self.patrol_center = pygame.Vector2(self.pos)
+                self.patrol_angle = 0
 
-    def update(self):
-        """Move along the path"""
+    def shoot(self, target_pos):
+        """Shoot at a target position"""
+        bullet = Bullet(self.pos, target_pos, self.damage, speed=8)
+        self.bullets.append(bullet)
+
+    def find_target(self):
+        """Find closest tower or wall (for tanks) to shoot at"""
+        closest_target = None
+        closest_distance = float('inf')
+        
+        # Check towers
+        for tower in self.game.towers:
+            distance = (tower.pos - self.pos).length()
+            if distance < self.range and distance < closest_distance:
+                closest_target = tower.pos  # Use tower's position instead of tower object
+                closest_distance = distance
+        
+        # If tank and no path, look for walls to destroy
+        if self.can_destroy_walls and not self.path:
+            # Find closest wall
+            for y in range(ROWS):
+                for x in range(COLS):
+                    if self.game.grid.grid[y][x] == 1:  # Wall
+                        wall_pos = pygame.Vector2(x * GRID_SIZE + GRID_SIZE//2,
+                                                y * GRID_SIZE + GRID_SIZE//2)
+                        distance = (wall_pos - self.pos).length()
+                        if distance < self.range and distance < closest_distance:
+                            closest_target = wall_pos
+                            closest_distance = distance
+        
+        return closest_target
+
+    def update(self, current_time):
+        """Move along the path or patrol if no path exists"""
+        # Update bullets
+        for bullet in self.bullets[:]:
+            bullet.update()
+            
+            # Check for hits on towers
+            for tower in self.game.towers[:]:  # Create a copy of the list to safely remove
+                if bullet.check_hit(tower):
+                    tower.health -= bullet.damage
+                    if tower.health <= 0 and tower in self.game.towers:  # Check if tower still exists
+                        self.game.towers.remove(tower)
+                    self.bullets.remove(bullet)
+                    break
+            
+            # Check for hits on walls (tanks only)
+            if self.can_destroy_walls:
+                grid_x = int(bullet.pos.x // GRID_SIZE)
+                grid_y = int(bullet.pos.y // GRID_SIZE)
+                if 0 <= grid_x < COLS and 0 <= grid_y < ROWS:
+                    if self.game.grid.grid[grid_y][grid_x] == 1:  # Wall
+                        self.game.grid.grid[grid_y][grid_x] = 0  # Destroy wall
+                        self.bullets.remove(bullet)
+                        # Recalculate path after destroying wall
+                        self.calculate_path()
+                        break
+            
+            # Remove bullets that are out of range
+            if (bullet.pos - self.pos).length() > self.range:
+                self.bullets.remove(bullet)
+        
+        # Try to shoot
+        if current_time - self.last_shot_time >= 1000 / self.attack_speed:
+            target = self.find_target()
+            if target:
+                self.shoot(target)
+                self.last_shot_time = current_time
+        
+        # Movement behavior
         if self.path and self.current_path_index < len(self.path):
+            # Normal path following behavior
             target_x, target_y = self.path[self.current_path_index]
             target_x *= GRID_SIZE
             target_y *= GRID_SIZE
 
             dx, dy = target_x - self.pos.x, target_y - self.pos.y
-            distance = max(1, (dx ** 2 + dy ** 2) ** 0.5)  # Avoid division by zero
+            distance = max(1, (dx ** 2 + dy ** 2) ** 0.5)
             move_x, move_y = (dx / distance) * self.speed, (dy / distance) * self.speed
 
-            self.pos.x += move_x
-            self.pos.y += move_y
+            new_pos = pygame.Vector2(self.pos.x + move_x, self.pos.y + move_y)
+            self.pos = self.clamp_to_grid(new_pos)
 
-            # If close to the next target position, move to the next path point
             if abs(dx) < self.speed and abs(dy) < self.speed:
                 self.current_path_index += 1
                 
-            # Check if reached base
             if self.current_path_index >= len(self.path):
                 self.reached_base = True
+        else:
+            # Patrol behavior when no path exists
+            if self.patrol_center is None:
+                self.patrol_center = pygame.Vector2(self.pos)
+            
+            self.patrol_angle += self.patrol_speed
+            patrol_x = self.patrol_center.x + math.cos(self.patrol_angle) * self.patrol_radius
+            patrol_y = self.patrol_center.y + math.sin(self.patrol_angle) * self.patrol_radius
+            
+            dx, dy = patrol_x - self.pos.x, patrol_y - self.pos.y
+            distance = max(1, (dx ** 2 + dy ** 2) ** 0.5)
+            move_x, move_y = (dx / distance) * self.speed, (dy / distance) * self.speed
+            
+            new_pos = pygame.Vector2(self.pos.x + move_x, self.pos.y + move_y)
+            self.pos = self.clamp_to_grid(new_pos)
+            
+            if random.random() < 0.01:  # 1% chance each frame
+                self.calculate_path()
 
     def draw(self, screen):
+        # Draw enemy
         pygame.draw.circle(screen, self.color, 
                          (int(self.pos.x), int(self.pos.y)), 
                          self.size)
+        
         # Draw health bar
         health_bar_length = 30
         health_ratio = self.health / self.enemy_types[self.type]["health"]
@@ -158,6 +289,10 @@ class Enemy:
                         (self.pos.x - health_bar_length/2,
                          self.pos.y - self.size - 5,
                          health_bar_length * health_ratio, 5))
+        
+        # Draw bullets
+        for bullet in self.bullets:
+            bullet.draw(screen)
 
 class Bullet:
     def __init__(self, start_pos, target_pos, damage, speed=10):
@@ -194,10 +329,12 @@ class Tower:
         self.bullets = []
         self.color = (0, 0, 255)  # Blue towers
         self.size = 30
+        self.health = 100  # Tower health
+        self.max_health = 100
     
     def update(self, current_time):
         # Update bullets
-        for bullet in self.bullets[:]:
+        for bullet in self.bullets[:]:  # Create a copy of the list to safely remove
             bullet.update()
             
             # Check for hits
@@ -206,11 +343,12 @@ class Tower:
                     enemy.health -= bullet.damage
                     if enemy.health <= 0:
                         enemy.is_dead = True
-                    self.bullets.remove(bullet)
+                    if bullet in self.bullets:  # Check if bullet still exists
+                        self.bullets.remove(bullet)
                     break
             
             # Remove bullets that are out of range
-            if (bullet.pos - self.pos).length() > self.range:
+            if (bullet.pos - self.pos).length() > self.range and bullet in self.bullets:
                 self.bullets.remove(bullet)
         
         # Try to shoot
@@ -239,10 +377,24 @@ class Tower:
     def draw(self, screen):
         # Draw tower
         pygame.draw.circle(screen, self.color, (int(self.pos.x), int(self.pos.y)), self.size)
+        
+        # Draw health bar
+        health_bar_length = 30
+        health_ratio = self.health / self.max_health
+        pygame.draw.rect(screen, (255, 0, 0), 
+                        (self.pos.x - health_bar_length/2, 
+                         self.pos.y - self.size - 5,
+                         health_bar_length, 5))
+        pygame.draw.rect(screen, (0, 255, 0),
+                        (self.pos.x - health_bar_length/2,
+                         self.pos.y - self.size - 5,
+                         health_bar_length * health_ratio, 5))
+        
         # Draw range circle (semi-transparent)
         range_surface = pygame.Surface((self.range * 2, self.range * 2), pygame.SRCALPHA)
         pygame.draw.circle(range_surface, (0, 0, 255, 30), (self.range, self.range), self.range)
         screen.blit(range_surface, (self.pos.x - self.range, self.pos.y - self.range))
+        
         # Draw bullets
         for bullet in self.bullets:
             bullet.draw(screen)
@@ -307,7 +459,7 @@ class WaveManager:
 
         # Update all active enemies
         for enemy in self.active_enemies[:]:  # Create copy to safely remove while iterating
-            enemy.update()
+            enemy.update(current_time)
             if enemy.is_dead or enemy.reached_base:
                 self.active_enemies.remove(enemy)
 
